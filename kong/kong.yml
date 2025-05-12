@@ -1,0 +1,313 @@
+_format_version: "2.1"
+_transform: true
+
+# Kong declarative configuration
+
+services:
+  # User BFF Service
+  - name: user-bff-service
+    url: http://user-bff:3000
+    routes:
+      - name: user-bff-route
+        paths:
+          - /api/users
+          - /api/auth
+        strip_path: false
+        protocols:
+          - http
+          - https
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 60
+          policy: local
+      - name: prometheus
+        config:
+          status_code_metrics: true
+          latency_metrics: true
+          upstream_health_metrics: true
+      - name: cors
+        config:
+          origins:
+            - '*'
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Accept-Version
+            - Content-Length
+            - Content-MD5
+            - Content-Type
+            - Date
+            - X-Auth-Token
+          credentials: true
+          max_age: 3600
+          preflight_continue: false
+
+  # Product BFF Service
+  - name: product-bff-service
+    url: http://product-bff:3001
+    routes:
+      - name: product-bff-route
+        paths:
+          - /api/products
+          - /api/inventory
+        strip_path: false
+        protocols:
+          - http
+          - https
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 60
+          policy: local
+      - name: prometheus
+        config:
+          status_code_metrics: true
+          latency_metrics: true
+          upstream_health_metrics: true
+      - name: cors
+        config:
+          origins:
+            - '*'
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Accept-Version
+            - Content-Length
+            - Content-MD5
+            - Content-Type
+            - Date
+            - X-Auth-Token
+          credentials: true
+          max_age: 3600
+          preflight_continue: false
+
+  # Auth Service (direct access for third-party integrations)
+  - name: auth-service
+    url: http://auth-service:4000
+    routes:
+      - name: auth-service-route
+        paths:
+          - /auth
+        strip_path: true
+        protocols:
+          - http
+          - https
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 30
+          policy: local
+      - name: prometheus
+        config:
+          status_code_metrics: true
+          latency_metrics: true
+          upstream_health_metrics: true
+      - name: key-auth
+        config:
+          key_names:
+            - apikey
+          key_in_body: false
+          hide_credentials: true
+      - name: cors
+        config:
+          origins:
+            - '*'
+          methods:
+            - GET
+            - POST
+            - PUT
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Accept-Version
+            - Content-Length
+            - Content-MD5
+            - Content-Type
+            - Date
+            - X-Auth-Token
+            - Authorization
+          credentials: true
+          max_age: 3600
+          preflight_continue: false
+
+  # Analytics Service
+  - name: analytics-service
+    url: http://analytics-service:4007
+    routes:
+      - name: analytics-service-route
+        paths:
+          - /api/analytics
+        strip_path: false
+        protocols:
+          - http
+          - https
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 30
+          policy: local
+      - name: prometheus
+        config:
+          status_code_metrics: true
+          latency_metrics: true
+          upstream_health_metrics: true
+      - name: jwt
+        config:
+          claims_to_verify:
+            - exp
+          key_claim_name: kid
+          secret_is_base64: false
+
+# Consumer configuration
+consumers:
+  - username: internal-services
+    custom_id: internal-services
+    plugins:
+      - name: key-auth
+        config:
+          key: "${INTERNAL_API_KEY}"
+
+  - username: analytics-dashboard
+    custom_id: analytics-dashboard
+    plugins:
+      - name: key-auth
+        config:
+          key: "${ANALYTICS_API_KEY}"
+
+  - username: third-party-integration
+    custom_id: third-party-integration
+    plugins:
+      - name: key-auth
+        config:
+          key: "${THIRD_PARTY_API_KEY}"
+      - name: rate-limiting
+        config:
+          minute: 10
+          policy: local
+
+# Global plugins
+plugins:
+  # Intelligent Request Throttling
+  - name: ai-request-throttling
+    config:
+      enabled: true
+      ml_model_endpoint: http://ai-throttling-service:5000/predict
+      default_limit: 60
+      min_limit: 10
+      max_limit: 200
+      learning_mode: true
+      feature_extraction:
+        - path
+        - method
+        - client_ip
+        - time_of_day
+        - day_of_week
+      adjustment_interval_seconds: 300
+
+  # Enhanced Logging
+  - name: file-log
+    config:
+      path: /usr/local/kong/logs/api-gateway.log
+      reopen: true
+      custom_fields_by_lua:
+        request_id: "return kong.request.get_header('X-Request-ID') or kong.tools.uuid()"
+        upstream_latency: "return ngx.ctx.KONG_WAITING_TIME or 0"
+        kong_latency: "return ngx.ctx.KONG_PROXY_LATENCY or 0"
+      request_format: |
+        {
+          "request": {
+            "id": "$(request_id)",
+            "method": "$(method)",
+            "uri": "$(uri)",
+            "size": "$(request.size)",
+            "headers": {
+              "host": "$(request.headers.host)",
+              "user-agent": "$(request.headers.user-agent)"
+            }
+          },
+          "client": {
+            "ip": "$(remote_addr)",
+            "consumer": "$(consumer.username)"
+          },
+          "response": {
+            "status": "$(status)",
+            "size": "$(response.size)",
+            "headers": {
+              "content-type": "$(response.headers.content-type)",
+              "content-length": "$(response.headers.content-length)"
+            }
+          },
+          "latencies": {
+            "kong": "$(kong_latency)",
+            "upstream": "$(upstream_latency)",
+            "request": "$(latencies.request)"
+          },
+          "service": {
+            "name": "$(service.name)",
+            "host": "$(service.host)",
+            "port": "$(service.port)"
+          },
+          "route": {
+            "name": "$(route.name)",
+            "id": "$(route.id)"
+          },
+          "started_at": $(started_at)
+        }
+
+  # Global Circuit Breaker
+  - name: circuit-breaker
+    config:
+      enabled: true
+      timeout: 60
+      tripping_error_codes:
+        - 500
+        - 502
+        - 503
+        - 504
+      tripping_error_count: 5
+      tripping_error_time_window: 60
+      reset_timeout: 300
+
+  # Distributed Tracing
+  - name: opentelemetry
+    config:
+      endpoint: http://jaeger:14268/api/traces
+      batch_size: 100
+      batch_flush_delay: 2
+      resource_attributes:
+        service.name: kong-gateway
+        service.version: 1.0.0
+        deployment.environment: development
+      trace_id_header: x-b3-traceid
+      span_id_header: x-b3-spanid
+      parent_id_header: x-b3-parentspanid
+      sampling_rate: 1.0
+
+  # Traffic Shadowing
+  - name: traffic-shadowing
+    config:
+      enabled: true
+      percentage: 10
+      target_url: http://shadow-service:8080
+      include_body: true
+      include_headers:
+        - host
+        - user-agent
+        - content-type
+      exclude_headers:
+        - authorization
+        - cookie
+      timeout: 1000
+      connection_timeout: 1500
